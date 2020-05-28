@@ -54,20 +54,31 @@ print(device)
 
 # Training Data
 # Dataset
-training_data_dataset = datasets.MNIST(
-    root="data",
-    train=True,
+
+training_data_dataset = datasets.CIFAR10(
+    root="data", train=True, download=True,
     transform=transforms.Compose(
         [
             transforms.Resize(IMAGE_SIZE, interpolation=2),
-            transforms.Grayscale(num_output_channels=3),
             transforms.ToTensor(),
             transforms.Normalize((0.5,0.5,0.5), (1.0,1.0,1.0))
         ]
-    ),
-    target_transform=None,
-    download=True
+    )
 )
+# training_data_dataset = datasets.MNIST(
+#     root="data",
+#     train=True,
+#     transform=transforms.Compose(
+#         [
+#             transforms.Resize(IMAGE_SIZE, interpolation=2),
+#             transforms.Grayscale(num_output_channels=3),
+#             transforms.ToTensor(),
+#             transforms.Normalize((0.5,0.5,0.5), (1.0,1.0,1.0))
+#         ]
+#     ),
+#     target_transform=None,
+#     download=True
+# )
 # DataSampler
 training_data_sampler = DistributedSampler(
     training_data_dataset,
@@ -85,23 +96,32 @@ training_data_loader = DataLoader(
     
 )
 
-
 # Validation Data
 # Dataset
-validation_data_dataset = datasets.MNIST(
-    root="data",
-    train=False,
+validation_data_dataset = datasets.CIFAR10(
+    root="data", train=False, download=True,
     transform=transforms.Compose(
         [
             transforms.Resize(IMAGE_SIZE, interpolation=2),
-            transforms.Grayscale(num_output_channels=3),
             transforms.ToTensor(),
             transforms.Normalize((0.5,0.5,0.5), (1.0,1.0,1.0))
         ]
-    ),
-    target_transform=None,
-    download=True
+    )
 )
+# validation_data_dataset = datasets.MNIST(
+#     root="data",
+#     train=False,
+#     transform=transforms.Compose(
+#         [
+#             transforms.Resize(IMAGE_SIZE, interpolation=2),
+#             transforms.Grayscale(num_output_channels=3),
+#             transforms.ToTensor(),
+#             transforms.Normalize((0.5,0.5,0.5), (1.0,1.0,1.0))
+#         ]
+#     ),
+#     target_transform=None,
+#     download=True
+# )
 # DataSampler
 validation_data_sampler = DistributedSampler(
     validation_data_dataset,
