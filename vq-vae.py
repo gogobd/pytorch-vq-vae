@@ -422,7 +422,7 @@ for i in xrange(num_training_updates):
     
     if (i+1) % 10 == 0:
         for param in model.parameters():
-            if param.grad.data is not None:
+            if param.grad is not None:
                 dist.all_reduce(param.grad.data, op=torch.distributed.ReduceOp.SUM)
                 param.grad.data /= world_size
 
