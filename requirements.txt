@@ -5,4 +5,5 @@ numpy
 scipy
 six
 umap-learn
-
+pandas
+pytorch-lightning
