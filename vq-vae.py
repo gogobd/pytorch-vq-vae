@@ -435,22 +435,21 @@ for i in xrange(num_training_updates):
 print("Done.")
 
 
-# Plot Loss
-
-train_res_recon_error_smooth = savgol_filter(train_res_recon_error, 201, 7)
-train_res_perplexity_smooth = savgol_filter(train_res_perplexity, 201, 7)
-
-f = plt.figure(figsize=(16,8))
-ax = f.add_subplot(1,2,1)
-ax.plot(train_res_recon_error_smooth)
-ax.set_yscale('log')
-ax.set_title('Smoothed NMSE.')
-ax.set_xlabel('iteration')
-
-ax = f.add_subplot(1,2,2)
-ax.plot(train_res_perplexity_smooth)
-ax.set_title('Smoothed Average codebook usage (perplexity).')
-ax.set_xlabel('iteration')
+# # Plot Loss
+# train_res_recon_error_smooth = savgol_filter(train_res_recon_error, 201, 7)
+# train_res_perplexity_smooth = savgol_filter(train_res_perplexity, 201, 7)
+# 
+# f = plt.figure(figsize=(16,8))
+# ax = f.add_subplot(1,2,1)
+# ax.plot(train_res_recon_error_smooth)
+# ax.set_yscale('log')
+# ax.set_title('Smoothed NMSE.')
+# ax.set_xlabel('iteration')
+# 
+# ax = f.add_subplot(1,2,2)
+# ax.plot(train_res_perplexity_smooth)
+# ax.set_title('Smoothed Average codebook usage (perplexity).')
+# ax.set_xlabel('iteration')
 
 # Show reconstructions
 model.eval()
@@ -466,8 +465,8 @@ valid_reconstructions = model._decoder(valid_quantize)
 train_originals = train_originals.to(device)
 _, train_reconstructions, _, _ = model._vq_vae(train_originals)
 
-
 os.makedirs("results", exist_ok=True)
+
 save_image(
     valid_reconstructions.cpu().data+0.5,
     fp="results/reconstruction.png",
