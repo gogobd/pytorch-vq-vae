@@ -448,11 +448,10 @@ for i in xrange(num_training_updates):
     train_res_recon_error.append(recon_error.item())
     train_res_perplexity.append(perplexity.item())
     
-    if (i+1) % 10 == 0:
-        for param in model.parameters():
-            if param.grad is not None:
-                dist.all_reduce(param.grad.data, op=torch.distributed.ReduceOp.SUM)
-                param.grad.data /= world_size
+    for param in model.parameters():
+        if param.grad is not None:
+            dist.all_reduce(param.grad.data, op=torch.distributed.ReduceOp.SUM)
+            param.grad.data /= world_size
 
     if (i+1) % 100 == 0:
         from IPython.display import clear_output
