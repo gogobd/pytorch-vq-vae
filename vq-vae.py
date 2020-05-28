@@ -39,7 +39,8 @@ num_embeddings = 512
 commitment_cost = 0.25
 decay = 0.99
 learning_rate = 1e-3
-IMAGE_SIZE = (256, 256)
+IMAGE_SIZE = (128, 128)
+PATH = "saved_models/vq-vae.net"
 
 pl.seed_everything(12345)
 dist.init_process_group(
@@ -51,6 +52,10 @@ dist.init_process_group(
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(device)
+
+os.makedirs("results", exist_ok=True)
+os.makedirs("saved_models", exist_ok=True)
+
 
 # Training Data
 # Dataset
@@ -418,6 +423,9 @@ model = Model(num_hiddens, num_residual_layers, num_residual_hiddens,
               num_embeddings, embedding_dim, 
               commitment_cost, decay).to(device)
 
+if os.path.exists(PATH):
+    model.load_state_dict(torch.load(PATH))
+
 optimizer = optim.Adam(model.parameters(), lr=learning_rate, amsgrad=False)
 
 # Train
@@ -485,7 +493,7 @@ valid_reconstructions = model._decoder(valid_quantize)
 train_originals = train_originals.to(device)
 _, train_reconstructions, _, _ = model._vq_vae(train_originals)
 
-os.makedirs("results", exist_ok=True)
+torch.save(model.state_dict(), PATH)
 
 save_image(
     valid_reconstructions.cpu().data+0.5,
@@ -500,7 +508,7 @@ save_image(
 )
 save_image(
     valid_originals.cpu()+0.5,
-    fp="results/oroginals.png",
+    fp="results/originals.png",
     nrow=8,
     padding=2,
     normalize=False,
