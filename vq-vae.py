@@ -1,6 +1,7 @@
 import os
-import sys
 import random
+import sys
+import time
 
 # import matplotlib.pyplot as plt
 
@@ -93,10 +94,16 @@ learning_rate = 1e-3
 saved_models_path = "./saved_models/{epoch:08d}.vq-vae.net"
 saved_results_path = "./results/{epoch:08d}.vq-vae.{name}"
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(device)
+if (torch.cuda.is_available()):
+    device = "cuda"
+    print("CUDA is available.")
+else:
+    device = "cpu"
+    print("This example uses nccl as backend which is only available for (nVidia) GPUs.")
+    sys.exit(-1)
 
 pl.seed_everything(12345)
+print("Initializing process group...")
 dist.init_process_group(
     backend=args.backend,
     init_method=args.init_method,
@@ -104,7 +111,7 @@ dist.init_process_group(
     world_size=args.world_size
 )
 
-print("Starting...")
+print("Starting")
 
 os.makedirs(os.path.dirname(saved_models_path.format(epoch=0)), exist_ok=True)
 os.makedirs(os.path.dirname(saved_results_path.format(epoch=0,name='')), exist_ok=True)
@@ -562,12 +569,40 @@ def validate():
     model.train()
 
 
+class Timer(object):
+    def __init__(self):
+        self.time_instantiated = time.time()
+        self.time_last = None
+        self.kwargs_last = None
+    
+    def start(self, **kwargs):
+        self.kwargs_last = kwargs
+        self.time_last = time.time()
+        return {
+            'span': 0,
+            'kwargs': kwargs,
+        }
+        
+    def lap(self, **kwargs):
+        time_now = time.time()
+        span = time_now - self.time_last
+        kwargs = self.kwargs_last
+        self.time_last = time_now
+        self.kwargs_last = kwargs
+        result = kwargs
+        result['span'] = span
+        return result
+
+
 # Train
 
 print("Trainig starts!")
 model.train()
 train_res_recon_error = []
 train_res_perplexity = []
+
+timer = Timer()
+timer.start(iterations=args.epoch_start)
 
 for epoch in xrange(args.epoch_start, args.epoch_start+args.num_epochs+1):
     (data, _) = next(iter(training_data_loader))
@@ -590,13 +625,23 @@ for epoch in xrange(args.epoch_start, args.epoch_start+args.num_epochs+1):
             param.grad.data /= float(args.world_size)
 
     if (epoch % 100 == 0) or (epoch==args.epoch_start+args.num_epochs):
-        from IPython.display import clear_output
-        clear_output(wait=True)
-        print('%d iterations' % (epoch))
+        timer_info = timer.lap(iterations=epoch)
+        fract = (len(data)) * (epoch - timer_info['iterations']) / timer_info['span']
+        
+        # from IPython.display import clear_output
+        # clear_output(wait=True)
+        print(
+            '{iterations:d} iterations, {fract:f}/s'.format(
+                iterations=epoch,
+                fract=fract
+            )
+        )
         print('recon_error: %.3f' % np.mean(train_res_recon_error[-100:]))
         print('perplexity: %.3f' % np.mean(train_res_perplexity[-100:]))
         save_model(model, epoch)
         validate()
+        
+        timer.start(iterations=epoch)
 
 print("Done.")
 
