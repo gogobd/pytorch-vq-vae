@@ -10,6 +10,7 @@ from scipy.signal import savgol_filter
 from six.moves import xrange
 
 import umap
+import argparse
 
 import torch
 import torch.nn as nn
@@ -24,13 +25,63 @@ from torchvision.utils import make_grid, save_image
 import pytorch_lightning as pl
 
 
-world_size = int(sys.argv[2])
-rank = int(sys.argv[1])
-init_method = sys.argv[3]  # 'tcp://192.168.1.154:23456'
-backend='nccl'
+parser = argparse.ArgumentParser(description='VQ-VAE.')
+parser.add_argument(
+    '--rank',
+    default=0,
+    type=int,
+    help="Rank of the training task"
+)
+parser.add_argument(
+    '--world_size',
+    default=1,
+    type=int,
+    help="World size of training tasks"
+)
+parser.add_argument(
+    '--init_method',
+    default='tcp://192.168.1.154:23456',
+    help="Master host (e.g. 'tcp://192.168.1.154:23456')"
+)
+parser.add_argument(
+    '--epoch_start',
+    default=1,
+    type=int,
+    help="Epoch to start training from (load savepoint)"
+)
+parser.add_argument(
+    '--num_epochs',
+    default=15000,
+    type=int,
+    help="Number of epochs to run"
+)
+parser.add_argument(
+    '--batch_size',
+    default=64,
+    type=int,
+    help="Number of data elements for one pass"
+)
+parser.add_argument(
+    '--image_width',
+    default=128,
+    type=int,
+    help="Horizontal image dimension"
+)
+parser.add_argument(
+    '--image_height',
+    default=128,
+    type=int,
+    help="Vertical image dimension"
+)
+parser.add_argument(
+    '--backend',
+    default="nccl",
+    help="Distributed backend to use"
+)
 
-batch_size = 64
-num_training_updates = 1500
+args = parser.parse_args()
+print(args)
+
 num_hiddens = 128
 num_residual_hiddens = 32
 num_residual_layers = 2
@@ -39,23 +90,24 @@ num_embeddings = 512
 commitment_cost = 0.25
 decay = 0.99
 learning_rate = 1e-3
-IMAGE_SIZE = (128, 128)
-PATH = "saved_models/vq-vae.net"
-
-pl.seed_everything(12345)
-dist.init_process_group(
-    backend=backend,
-    init_method=init_method,
-    rank=rank,
-    world_size=world_size
-)
+saved_models_path = "./saved_models/{epoch:08d}.vq-vae.net"
+saved_results_path = "./results/{epoch:08d}.vq-vae.{name}"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(device)
 
-os.makedirs("results", exist_ok=True)
-os.makedirs("saved_models", exist_ok=True)
+pl.seed_everything(12345)
+dist.init_process_group(
+    backend=args.backend,
+    init_method=args.init_method,
+    rank=args.rank,
+    world_size=args.world_size
+)
 
+print("Starting...")
+
+os.makedirs(os.path.dirname(saved_models_path.format(epoch=0)), exist_ok=True)
+os.makedirs(os.path.dirname(saved_results_path.format(epoch=0,name='')), exist_ok=True)
 
 # Training Data
 # Dataset
@@ -63,7 +115,7 @@ training_data_dataset = datasets.ImageFolder(
     "/data/imagenet",
     transform=transforms.Compose(
         [
-            transforms.Resize(IMAGE_SIZE, interpolation=2),
+            transforms.Resize((args.image_height,args.image_width), interpolation=2),
             transforms.ToTensor(),
             transforms.Normalize((0.5,0.5,0.5), (1.0,1.0,1.0))
         ]
@@ -99,14 +151,14 @@ training_data_dataset = datasets.ImageFolder(
 # DataSampler
 training_data_sampler = DistributedSampler(
     training_data_dataset,
-    num_replicas=world_size,
-    rank=rank,
+    num_replicas=args.world_size,
+    rank=args.rank,
     shuffle=True
 )
 # DataLoader
 training_data_loader = DataLoader(
     training_data_dataset,
-    batch_size=batch_size, 
+    batch_size=args.batch_size, 
     shuffle=(training_data_sampler is None),
     sampler=training_data_sampler,
     pin_memory=True,
@@ -119,7 +171,7 @@ validation_data_dataset = datasets.ImageFolder(
     "/data/imagenet",
     transform=transforms.Compose(
         [
-            transforms.Resize(IMAGE_SIZE, interpolation=2),
+            transforms.Resize((args.image_height,args.image_width), interpolation=2),
             transforms.ToTensor(),
             transforms.Normalize((0.5,0.5,0.5), (1.0,1.0,1.0))
         ]
@@ -155,8 +207,8 @@ validation_data_dataset = datasets.ImageFolder(
 # DataSampler
 validation_data_sampler = DistributedSampler(
     validation_data_dataset,
-    num_replicas=world_size,
-    rank=rank,
+    num_replicas=args.world_size,
+    rank=args.rank,
     shuffle=True
 )
 # DataLoader
@@ -444,21 +496,80 @@ class Model(nn.Module):
         x_recon = self._decoder(quantized)
         return loss, x_recon, perplexity
 
-model = Model(num_hiddens, num_residual_layers, num_residual_hiddens,
-              num_embeddings, embedding_dim, 
-              commitment_cost, decay).to(device)
+model = Model(
+    num_hiddens, num_residual_layers, num_residual_hiddens,
+    num_embeddings, embedding_dim, 
+    commitment_cost, decay
+).to(device)
 
-if os.path.exists(PATH):
-    model.load_state_dict(torch.load(PATH))
+load_model_path = saved_models_path.format(epoch=args.epoch_start)
+if os.path.exists(load_model_path):
+    print("Loading {}".format(load_model_path))
+    load_dict = torch.load(load_model_path)
+    model.load_state_dict(load_dict['model_state_dict'])
+    print(load_dict.keys())
+else:
+    print("Could not read {}; no data was loaded.".format(load_model_path))
 
 optimizer = optim.Adam(model.parameters(), lr=learning_rate, amsgrad=False)
 
+def save_model(model, epoch):
+    save_dict = {
+        'model_state_dict': model.state_dict(),
+        'epoch': epoch,
+        'args': repr(args),
+    }
+    torch.save(save_dict, saved_models_path.format(epoch=epoch))
+
+    
+# Show reconstructions
+def validate():
+    model.eval()
+
+    (valid_originals, _) = next(iter(validation_data_loader))
+    valid_originals = valid_originals.to(device)
+
+    vq_output_eval = model._pre_vq_conv(model._encoder(valid_originals))
+    _, valid_quantize, _, _ = model._vq_vae(vq_output_eval)
+    valid_reconstructions = model._decoder(valid_quantize)
+
+    (train_originals, _) = next(iter(training_data_loader))
+    train_originals = train_originals.to(device)
+    _, train_reconstructions, _, _ = model._vq_vae(train_originals)
+
+    save_image(
+        valid_reconstructions.cpu().data+0.5,
+        fp=saved_results_path.format(epoch=epoch, name='reconstruction.png'),
+        nrow=8,
+        padding=2,
+        normalize=False,
+        range=None,
+        scale_each=False,
+        pad_value=0,
+        format="png"
+    )
+    save_image(
+        valid_originals.cpu()+0.5,
+        fp=saved_results_path.format(epoch=epoch, name='originals.png'),
+        nrow=8,
+        padding=2,
+        normalize=False,
+        range=None,
+        scale_each=False,
+        pad_value=0,
+        format="png"
+    )
+    model.train()
+
+
 # Train
+
+print("Trainig starts!")
 model.train()
 train_res_recon_error = []
 train_res_perplexity = []
 
-for i in xrange(num_training_updates):
+for epoch in xrange(args.epoch_start, args.epoch_start+args.num_epochs+1):
     (data, _) = next(iter(training_data_loader))
     data = data.to(device)
     optimizer.zero_grad()
@@ -466,7 +577,7 @@ for i in xrange(num_training_updates):
     vq_loss, data_recon, perplexity = model(data)
     recon_error = F.mse_loss(data_recon, data)
     loss = recon_error + vq_loss
-    
+    loss = loss / float(len(data))
     loss.backward()
     optimizer.step()
     
@@ -476,14 +587,17 @@ for i in xrange(num_training_updates):
     for param in model.parameters():
         if param.grad is not None:
             dist.all_reduce(param.grad.data, op=torch.distributed.ReduceOp.SUM)
-            param.grad.data /= world_size
+            param.grad.data /= float(args.world_size)
 
-    if (i+1) % 100 == 0:
+    if (epoch % 100 == 0) or (epoch==args.epoch_start+args.num_epochs):
         from IPython.display import clear_output
         clear_output(wait=True)
-        print('%d iterations' % (i+1))
+        print('%d iterations' % (epoch))
         print('recon_error: %.3f' % np.mean(train_res_recon_error[-100:]))
         print('perplexity: %.3f' % np.mean(train_res_perplexity[-100:]))
+        save_model(model, epoch)
+        validate()
+
 print("Done.")
 
 
@@ -503,44 +617,6 @@ print("Done.")
 # ax.set_title('Smoothed Average codebook usage (perplexity).')
 # ax.set_xlabel('iteration')
 
-# Show reconstructions
-model.eval()
-
-(valid_originals, _) = next(iter(validation_data_loader))
-valid_originals = valid_originals.to(device)
-
-vq_output_eval = model._pre_vq_conv(model._encoder(valid_originals))
-_, valid_quantize, _, _ = model._vq_vae(vq_output_eval)
-valid_reconstructions = model._decoder(valid_quantize)
-
-(train_originals, _) = next(iter(training_data_loader))
-train_originals = train_originals.to(device)
-_, train_reconstructions, _, _ = model._vq_vae(train_originals)
-
-torch.save(model.state_dict(), PATH)
-
-save_image(
-    valid_reconstructions.cpu().data+0.5,
-    fp="results/reconstruction.png",
-    nrow=8,
-    padding=2,
-    normalize=False,
-    range=None,
-    scale_each=False,
-    pad_value=0,
-    format="png"
-)
-save_image(
-    valid_originals.cpu()+0.5,
-    fp="results/originals.png",
-    nrow=8,
-    padding=2,
-    normalize=False,
-    range=None,
-    scale_each=False,
-    pad_value=0,
-    format="png"
-)
 
 # def show(img):
 #     npimg = img.numpy()
@@ -559,5 +635,5 @@ save_image(
 # plt.scatter(proj[:,0], proj[:,1], alpha=0.3)
 # 
 
-# python vq-vae.py 0 2 'tcp://192.168.1.154:23456'
-# python vq-vae.py 1 2 'tcp://192.168.1.154:23456'
+# python vq-vae.py --rank 0 --world_size 2 --epoch_start 0 --num_epochs 15000 --init_method 'tcp://192.168.1.154:23456'
+# python vq-vae.py --rank 1 --world_size 2 --epoch_start 0 --num_epochs 15000 --init_method 'tcp://192.168.1.154:23456'
