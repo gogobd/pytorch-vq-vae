@@ -1,13 +1,14 @@
 import os
+import glob
+import math
 import random
 import sys
 import time
-
-# import matplotlib.pyplot as plt
-
 import numpy as np
-from scipy.signal import savgol_filter
 
+from PIL import Image
+
+from scipy.signal import savgol_filter
 from six.moves import xrange
 
 import umap
@@ -18,7 +19,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import torch.distributed as dist
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import Dataset, DataLoader, DistributedSampler
 
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
@@ -103,34 +104,94 @@ else:
     sys.exit(-1)
 
 pl.seed_everything(12345)
-print("Initializing process group...")
-dist.init_process_group(
-    backend=args.backend,
-    init_method=args.init_method,
-    rank=args.rank,
-    world_size=args.world_size
-)
-
-print("Starting")
 
 os.makedirs(os.path.dirname(saved_models_path.format(epoch=0)), exist_ok=True)
 os.makedirs(os.path.dirname(saved_results_path.format(epoch=0,name='')), exist_ok=True)
 
+
+class NoisySource_ImageDataset(Dataset):
+    def __init__(self, images_pattern, transforms_before=None, transforms_after=None):
+        self.images_pattern = images_pattern
+        self.transforms_before = transforms_before
+        self.transforms_after = transforms_after
+        self.image_names = glob.glob(images_pattern)
+
+    def __len__(self):
+        return len(self.image_names)
+
+    def __getitem__(self, idx):
+        while True:
+            img_name = self.image_names[idx]
+            image_trg = self._load_image(img_name)
+            if (image_trg.size[0] >= args.image_width) and (image_trg.size[1] >= args.image_height):
+                break
+            print("Image {} too small ({}).".format(img_name, image_trg.size))
+            idx = (idx+1) % len(self)
+            
+        if self.transforms_before:
+            image_trg = self.transforms_before(image_trg)
+        image_src = self._pixel_noise(image_trg)
+        if self.transforms_after:
+            image_trg = self.transforms_after(image_trg)
+        if self.transforms_after:
+            image_src = self.transforms_after(image_src)
+        return {
+            "image_src": image_src,
+            "image_trg": image_trg,
+        }
+
+    def _load_image(self, path):
+        with open(path, 'rb') as f:
+            img = Image.open(f)
+            return img.convert('RGB')
+        
+    def _pixel_noise(self, src):
+        factor = random.randint(8,64)
+        pix = src.copy()
+        nsiz_w = max(int(src.width/factor),1)
+        nsiz_h = max(int(src.height/factor),1)
+        pix = pix.resize((nsiz_w, nsiz_h))
+        pix = pix.resize(src.size, Image.NEAREST)
+        w0 = random.randint(0,src.width)
+        h0 = random.randint(0,src.height)
+        w1 = random.randint(w0, src.width)
+        h1 = random.randint(h0, src.height)
+        pix = pix.crop((w0,h0,w1,h1))
+        res = src.copy()
+        res.paste(pix, (w0,h0))
+        return res
+
 # Training Data
 # Dataset
-training_data_dataset = datasets.ImageFolder(
-    "/data/imagenet",
-    transform=transforms.Compose(
+
+training_data_dataset = NoisySource_ImageDataset(
+    "/data/imagenet/imagenet_images/*/*.jpg",
+    transforms_before=transforms.Compose(
         [
-            transforms.Resize((args.image_height,args.image_width), interpolation=2),
+            transforms.RandomCrop((args.image_height,args.image_width), padding_mode='reflect')
+        ]
+    ),
+    transforms_after=transforms.Compose(
+        [
             transforms.ToTensor(),
             transforms.Normalize((0.5,0.5,0.5), (1.0,1.0,1.0))
         ]
     ),
-#    target_transform=None,
-#    loader=<function default_loader>,
-#    is_valid_file=None
 )
+
+# training_data_dataset = datasets.ImageFolder(
+#     "/data/imagenet",
+#     transform=transforms.Compose(
+#         [
+#             transforms.Resize((args.image_height,args.image_width), interpolation=2),
+#             transforms.ToTensor(),
+#             transforms.Normalize((0.5,0.5,0.5), (1.0,1.0,1.0))
+#         ]
+#     ),
+# #    target_transform=None,
+# #    loader=<function default_loader>,
+# #    is_valid_file=None
+# )
 # training_data_dataset = datasets.CIFAR10(
 #     root="data", train=True, download=True,
 #     transform=transforms.Compose(
@@ -169,24 +230,37 @@ training_data_loader = DataLoader(
     shuffle=(training_data_sampler is None),
     sampler=training_data_sampler,
     pin_memory=True,
-    
 )
 
 # Validation Data
 # Dataset
-validation_data_dataset = datasets.ImageFolder(
-    "/data/imagenet",
-    transform=transforms.Compose(
+validation_data_dataset = NoisySource_ImageDataset(
+    "/data/imagenet/imagenet_images/*/*.jpg",
+    transforms_before=transforms.Compose(
         [
-            transforms.Resize((args.image_height,args.image_width), interpolation=2),
+            transforms.RandomCrop((args.image_height,args.image_width), )
+        ]
+    ),
+    transforms_after=transforms.Compose(
+        [
             transforms.ToTensor(),
             transforms.Normalize((0.5,0.5,0.5), (1.0,1.0,1.0))
         ]
     ),
-#    target_transform=None,
-#    loader=<function default_loader>,
-#    is_valid_file=None
 )
+# validation_data_dataset = datasets.ImageFolder(
+#     "/data/imagenet",
+#     transform=transforms.Compose(
+#         [
+#             transforms.Resize((args.image_height,args.image_width), interpolation=2),
+#             transforms.ToTensor(),
+#             transforms.Normalize((0.5,0.5,0.5), (1.0,1.0,1.0))
+#         ]
+#     ),
+# #    target_transform=None,
+# #    loader=<function default_loader>,
+# #    is_valid_file=None
+# )
 # validation_data_dataset = datasets.CIFAR10(
 #     root="data", train=False, download=True,
 #     transform=transforms.Compose(
@@ -226,6 +300,10 @@ validation_data_loader = DataLoader(
     sampler=validation_data_sampler,
     pin_memory=True,
 )
+
+training_data_loader_iterator = iter(training_data_loader)
+validation_data_loader_iterator = iter(validation_data_loader)
+
 
 # Vector Quantizer Layer
 # 
@@ -533,16 +611,14 @@ def save_model(model, epoch):
 def validate():
     model.eval()
 
-    (valid_originals, _) = next(iter(validation_data_loader))
+    # (valid_originals, _) = next(iter(validation_data_loader))
+    data = next(validation_data_loader_iterator)
+    valid_originals = data['image_src']
+    valid_originals_targets = data['image_trg']
     valid_originals = valid_originals.to(device)
-
     vq_output_eval = model._pre_vq_conv(model._encoder(valid_originals))
     _, valid_quantize, _, _ = model._vq_vae(vq_output_eval)
     valid_reconstructions = model._decoder(valid_quantize)
-
-    (train_originals, _) = next(iter(training_data_loader))
-    train_originals = train_originals.to(device)
-    _, train_reconstructions, _, _ = model._vq_vae(train_originals)
 
     save_image(
         valid_reconstructions.cpu().data+0.5,
@@ -566,7 +642,51 @@ def validate():
         pad_value=0,
         format="png"
     )
+    save_image(
+        valid_originals_targets.cpu()+0.5,
+        fp=saved_results_path.format(epoch=epoch, name='targets.png'),
+        nrow=8,
+        padding=2,
+        normalize=False,
+        range=None,
+        scale_each=False,
+        pad_value=0,
+        format="png"
+    )
     model.train()
+
+    
+def convert_size(size_bytes):
+   if size_bytes == 0:
+       return "0B"
+   size_name = ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
+   i = int(math.floor(math.log(size_bytes, 1024)))
+   p = math.pow(1024, i)
+   s = round(size_bytes / p, 2)
+   return "%s %s" % (s, size_name[i])
+
+def device_memory_info(device_number=0):
+    t = torch.cuda.get_device_properties(device_number).total_memory
+    c = torch.cuda.memory_cached(device_number)
+    a = torch.cuda.memory_allocated(device_number)
+    f = c-a  # free inside cache
+    return {
+        'total': t,
+        'cached': c,
+        'allocated': a,
+        'free': f,
+    }
+
+def print_device_memory_info():
+    info = device_memory_info()
+    print(
+        "Total: {}, Cached: {}, Allocated: {}, Free: {}".format(
+            convert_size(info['total']),
+            convert_size(info['cached']),
+            convert_size(info['allocated']),
+            convert_size(info['free']),
+        )
+    )
 
 
 class Timer(object):
@@ -596,6 +716,16 @@ class Timer(object):
 
 # Train
 
+print_device_memory_info()
+
+print("Initializing process group...")
+dist.init_process_group(
+    backend=args.backend,
+    init_method=args.init_method,
+    rank=args.rank,
+    world_size=args.world_size
+)
+
 print("Trainig starts!")
 model.train()
 train_res_recon_error = []
@@ -605,14 +735,17 @@ timer = Timer()
 timer.start(iterations=args.epoch_start)
 
 for epoch in xrange(args.epoch_start, args.epoch_start+args.num_epochs+1):
-    (data, _) = next(iter(training_data_loader))
-    data = data.to(device)
+    data = next(training_data_loader_iterator)
+    image_src = data['image_src']
+    image_trg = data['image_trg']
+    image_src = data['image_src'].to(device)
+    image_trg = data['image_trg'].to(device)
     optimizer.zero_grad()
 
-    vq_loss, data_recon, perplexity = model(data)
-    recon_error = F.mse_loss(data_recon, data)
+    vq_loss, data_recon, perplexity = model(image_src)
+    recon_error = F.mse_loss(data_recon, image_trg)
     loss = recon_error + vq_loss
-    loss = loss / float(len(data))
+    loss = loss / float(len(data['image_src']))
     loss.backward()
     optimizer.step()
     
@@ -641,6 +774,7 @@ for epoch in xrange(args.epoch_start, args.epoch_start+args.num_epochs+1):
         save_model(model, epoch)
         validate()
         
+        print_device_memory_info()
         timer.start(iterations=epoch)
 
 print("Done.")
