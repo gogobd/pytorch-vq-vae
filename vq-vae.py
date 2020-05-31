@@ -41,6 +41,12 @@ parser.add_argument(
     help="World size of training tasks"
 )
 parser.add_argument(
+    '--num_workers',
+    default=4,
+    type=int,
+    help="Number of parallel data loaders"
+)
+parser.add_argument(
     '--init_method',
     default='tcp://192.168.1.154:23456',
     help="Master host (e.g. 'tcp://192.168.1.154:23456')"
@@ -230,6 +236,7 @@ training_data_loader = DataLoader(
     shuffle=(training_data_sampler is None),
     sampler=training_data_sampler,
     pin_memory=True,
+    num_workers=args.num_workers,
 )
 
 # Validation Data
@@ -751,15 +758,15 @@ for epoch in xrange(args.epoch_start, args.epoch_start+args.num_epochs+1):
     
     train_res_recon_error.append(recon_error.item())
     train_res_perplexity.append(perplexity.item())
-    
+
     for param in model.parameters():
         if param.grad is not None:
             dist.all_reduce(param.grad.data, op=torch.distributed.ReduceOp.SUM)
             param.grad.data /= float(args.world_size)
 
-    if (epoch % 100 == 0) or (epoch==args.epoch_start+args.num_epochs):
+    if ((epoch % 100 == 0) or (epoch==args.epoch_start+args.num_epochs)) and (epoch != args.epoch_start):
         timer_info = timer.lap(iterations=epoch)
-        fract = (len(data)) * (epoch - timer_info['iterations']) / timer_info['span']
+        fract = len(image_trg) * (epoch - timer_info['iterations']) / timer_info['span']
         
         # from IPython.display import clear_output
         # clear_output(wait=True)
