@@ -128,10 +128,13 @@ class NoisySource_ImageDataset(Dataset):
     def __getitem__(self, idx):
         while True:
             img_name = self.image_names[idx]
-            image_trg = self._load_image(img_name)
-            if (image_trg.size[0] >= args.image_width) and (image_trg.size[1] >= args.image_height):
-                break
-            print("Image {} too small ({}).".format(img_name, image_trg.size))
+            try:
+                image_trg = self._load_image(img_name)
+                if (image_trg.size[0] >= args.image_width) and (image_trg.size[1] >= args.image_height):
+                    break
+                print("Image {} too small ({}).".format(img_name, image_trg.size))
+            except Exception as e:
+                print("Exception {} - caught.".format(str(e)))
             idx = (idx+1) % len(self)
             
         if self.transforms_before:
