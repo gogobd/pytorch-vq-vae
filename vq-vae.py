@@ -742,7 +742,11 @@ timer = Timer()
 timer.start(iterations=args.epoch_start)
 
 for epoch in xrange(args.epoch_start, args.epoch_start+args.num_epochs+1):
-    data = next(training_data_loader_iterator)
+    try:
+        data = next(training_data_loader_iterator)
+    except StopIteration:
+        training_data_loader_iterator = iter(data_loader)
+        data = next(training_data_loader_iterator)
     image_src = data['image_src']
     image_trg = data['image_trg']
     image_src = data['image_src'].to(device)
