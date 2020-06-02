@@ -622,7 +622,12 @@ def validate():
     model.eval()
 
     # (valid_originals, _) = next(iter(validation_data_loader))
-    data = next(validation_data_loader_iterator)
+    while True:
+        try:
+            data = next(validation_data_loader_iterator)
+            break
+        except StopIteration:
+            validation_data_loader_iterator = iter(validation_data_loader)
     valid_originals = data['image_src']
     valid_originals_targets = data['image_trg']
     valid_originals = valid_originals.to(device)
@@ -748,7 +753,7 @@ for epoch in xrange(args.epoch_start, args.epoch_start+args.num_epochs+1):
     try:
         data = next(training_data_loader_iterator)
     except StopIteration:
-        training_data_loader_iterator = iter(data_loader)
+        training_data_loader_iterator = iter(training_data_loader)
         data = next(training_data_loader_iterator)
     image_src = data['image_src']
     image_trg = data['image_trg']
