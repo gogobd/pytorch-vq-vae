@@ -619,6 +619,7 @@ def save_model(model, epoch):
     
 # Show reconstructions
 def validate():
+    global validation_data_loader_iterator
     model.eval()
 
     # (valid_originals, _) = next(iter(validation_data_loader))
